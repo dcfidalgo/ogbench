@@ -1,0 +1,8 @@
+Bootstrap: docker
+From: rocm/jax:rocm6.4.1-jax0.4.35-py3.12
+
+%post
+apt-get -y update
+apt-get -y install libglfw3 libglew-dev libosmesa6
+pip install jax[rocm] ogbench flax distrax ml_collections matplotlib moviepy wandb
+

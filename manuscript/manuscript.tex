@@ -1,0 +1,717 @@
+\documentclass[draft]{article}
+
+\usepackage{arxiv}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{lipsum}		% Can be removed after putting your text content
+\usepackage{graphicx}
+\usepackage{natbib}
+\usepackage{doi}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage{multirow}
+
+\usepackage{algorithm}
+%\usepackage{algpseudocode}
+\usepackage{algorithmic}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\usepackage{thm-restate}
+
+\makeatletter
+\def\thmt@innercounters{equation,theorem}
+\makeatother
+
+\usepackage[colorinlistoftodos]{todonotes}
+
+\newcommand{\sS}{\mathcal{S}}
+\newcommand{\sA}{\mathcal{A}}
+\newcommand{\sR}{\mathbb{R}}
+\newcommand{\train}{\mathrm{train}}
+\newcommand{\val}{\mathrm{val}}
+\newcommand{\p}{\rho}  % so we can switch the symbol for the stationary distribution
+\newcommand{\dist}[1]{\Delta({#1})}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\C}{\mathrm{C}}
+\newcommand{\K}{\mathrm{K}}
+
+\definecolor{cbsGreen}{HTML}{00A89D}
+
+\usepackage{tikz}
+\usetikzlibrary{bayesnet} % Recommended for Bayesian networks
+
+\usepackage{wrapfig}
+
+\title{Actionable Representations: Offline Reinforcement Learning via Imitation Constrained Skill Discovery}
+
+%\date{September 9, 1985}	% Here you can change the date presented in the paper title
+%\date{} 					% Or removing it
+
+\author{Nikola Milosevic \\
+Max Planck Institute for Human Cognitive and Brain Sciences, Leipzig\\
+Center for Scalable Data Analytics and Artificial Intelligence (ScaDS.AI), Dresden/Leipzig\\
+\texttt{nmilosevic@cbs.mpg.de} \\
+\And
+David Carreto Fidalgo \\
+Max Planck Computing and Data Facility, Garching\\
+\texttt{david.carreto.fidalgo@mpcdf.mpg.de} \\
+\And
+Nico Scherf \\
+Max Planck Institute for Human Cognitive and Brain Sciences, Leipzig\\
+Center for Scalable Data Analytics and Artificial Intelligence (ScaDS.AI), Dresden/Leipzig\\
+\texttt{nscherf@cbs.mpg.de} \\
+}
+
+% Uncomment to remove the date
+%\date{}
+
+% Uncomment to override  the `A preprint' in the header
+%\renewcommand{\headeright}{Technical Report}
+%\renewcommand{\undertitle}{Technical Report}
+\renewcommand{\shorttitle}{Actionable Representations}
+
+%%% Add PDF metadata to help others organize their library
+%%% Once the PDF is generated, you can check the metadata with
+%%% $ pdfinfo template.pdf
+\hypersetup{
+pdftitle={A template for the arxiv style},
+pdfsubject={q-bio.NC, q-bio.QM},
+pdfauthor={Nikola Milosevic, Nico Scherf},
+pdfkeywords={Representation Learning, Reinforcement Learning, Information Geometry},
+}
+\def\checkmark{\tikz\fill[scale=0.3](0,.35) -- (.25,0) -- (1,.7) -- (.25,.15) -- cycle;} 
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Representation learning is central to deep reinforcement learning (RL), particularly in high-dimensional, continuous environments, where offline pretraining has proven valuable in improving sample efficiency of model-free algorithms. 
+While much of existing work focuses on state representation, recent research has also explored representing dynamics and collections of stationary policies (skills).
+In this paper, we propose to learn actionable representations (ARs). 
+These are latent components that capture independent and actionable aspects of the environments latent state. 
+While the idea is not entirely new, our approach is grounded in a synthesis of independent component analysis (ICA) and reinforcement learning, enabling agents to disentangle the environment into independently controllable factors. 
+We show that such representations are valuable for offline pretraining in RL, since they improve policy robustness, facilitate transfer, and enhance interpretability in complex tasks.
+\end{abstract}
+
+% keywords can be removed
+\keywords{Representation Learning \and Reinforcement Learning \and Independent Component Analysis}
+
+\section{Introduction} 
+
+Intelligent agents must reason about the long-term consequences of their actions across multiple scales of space and time. Doing so efficiently and safely requires abstract representations of states, behaviors, and their outcomes. These representations must not only be predictive, but also manipulable in ways that reflect the underlying controllable structure of the world. A truly useful representation should support inference over unobserved behaviors and generalization to novel situations and strategies.
+We argue that the key lies in understanding the relationship between the structure of behavior space and the space of manipulable environmental states. %, an understanding that emerges naturally through the lens of occupancy measures in Markov decision processes. 
+This perspective draws strong analogies between the theory of unsupervised representation learning and control as probabilistic inference.
+
+%We can think of intent as a structured, state-grounded representation of extended behavior and its expected outcome. It can be thought of as an executable behavioral code that encapsulates both a temporally extended policy and a model of its expected consequences. Ideally, intent represents affordances by providing agents with manipulable units of behavior that can be composed, compared, or reasoned over. Formally, an intent is associated with a distribution over state and action visitations, represented by its discounted occupancy measure, and may carry a latent description of intent or outcome. Unlike classical options or skills, intents are not defined by extended actions, but by how a policy determines the agent’s expected long-term effect on latent world states. This enables reasoning not only about what is possible, but about what could be done in hypothetical or novel contexts. %\emph{in a model-free manner}.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{graphics/AR-teaser.pdf}
+    \caption{A) A parametric foundation policy maps a latent intent space onto the space of state-action distributions B) State-action distributions are an interpretation of the common occupancy measure as a bayesian probability distribution after marginalizing out the time variable using a time-prior. C) A comparison of generative models associated with ICA/IMA and our IAR framework.}
+    \label{fig:teaser}
+\end{figure}
+
+\paragraph{Inferring controllability by observing others} Insights from developmental psychology suggest that humans acquire structured behavioral knowledge not merely through observation, but through purposeful interaction. Even infants show sensitivity to the intentions behind others’ actions, selectively attending to interventions that appear goal-directed and causally effective. This form of causal interaction-based learning enables children to isolate manipulable aspects of their environment and to infer abstract behavioral regularities from sparse experience. 
+%\paragraph{Characterization of intent through invariants} 
+In effect, they appear to learn a representation of behavior in terms of latent intentions, factored units of control whose meaning is defined not only by what they achieve, but also \textit{by what they leave invariant}. 
+%Intent resembles dynamically decoupled subsystems or controlled invariant subspaces in geometric control theory: they act selectively, without interfering with orthogonal behavioral dimensions. 
+We argue that this kind of structured, independent manipulability is a core component of meaningful behavioral abstraction, and that a computational theory of intent provides a natural model of such abstraction, without the need for a full causal model of the world.
+
+%\paragraph{The Role of Online Control} Offline learning of representations from replay buffers is appealing, but fragile. Causal issues and domain shifts often undermine performance, especially when training data lacks diversity.Online learning, by contrast, enables a feedback loop: representations shape behavior, and behavior shapes representation. This loop is essential for aligning learned structure with true affordances.Even rich offline data may fail to support general-purpose actionable representations unless it spans all controllable dimensions of variation. Thus, we argue for the importance of active interaction with the environment during representation learning and formulate our framework in the context of \emph{approximate imitation learning}, meaning learning online from exploratory non-expert demonstration data.This framework helps us bootstrap the representation-exploration-loop, sidestep practical issues of exploration and focus on the relation of state and behavior representation.
+
+\paragraph{Relation to ICA}
+From a representation learning perspective, perception can be seen as discovering latent factors of variation in observed data. In RL terms, this means inferring meaningful state representations from raw observations. Extending this view, a unified theory of perception and action would describe not only how agents identify these factors but also how they purposefully manipulate them through (temporally extended) actions.
+Nonlinear independent component analysis (ICA) offers a principled framework for unsupervised learning of latent factors and has inspired many works that integrate ICA into RL. Interestingly, the connection can also run in the other direction: RL problems themselves can be reformulated within the ICA framework. A natural way to conceptually align RL with ICA is to view the temporal sequence of RL interactions as a realization of an underlying i.i.d. stochastic process, analogous to how ICA handles temporal signals. This perspective opens new avenues for disentangling independently controllable factors by treating temporally extended actions as interventions that reveal the underlying causal structure of the environment.
+
+\paragraph{Contributions and Scope} Our goal is not to address exploration or reward design, though these may intersect with our framework. Nor do we focus on hierarchical RL directly, though skills and temporally extended behaviors naturally relate to actionable representations.
+Instead, we focus on the representation of the space of behaviors available to an agent in a way that is compatible with its representation of world states.
+How behavior and state representation can be represented in a compatible manner is a fundamental question, which may not even have a definitive answer. However, we offer a partial solution to this problem and a conceptual framework with the potential to foster collaboration and progress at the intersection of representation learning and reinforcement learning research.
+
+\subsection{Related Work}
+
+Our approach builds on and extends ideas at the intersection of latent-variable generative modeling and model-free RL. InfoGAIL~\citep{li2017infogail} and subsequent variational imitation learning methods~\citep{rafailov2021visual} highlight how latent factors can capture meaningful behavior primitives. Recent methods for imitation-constrained diversity~\citep{sun2024prompt, kolev2025dual} further exploit this idea. Theoretical works on mutual information skill discovery~\citep{eysenbach2022the, yang2025task} further inform our framework.
+A closely related body of work focuses specifically on successor representations and occupancy models. Classic successor representations~\citep{dayan1993improving} have inspired deep RL extensions~\citep{barreto2017successor, touati2021learning}. 
+Further generalizations include gamma-models~\citep{janner2020gamma} and recent variants~\citep{farebrother2025temporal}, intention-conditioned occupancy models~\citep{zheng2025intentionconditionedflowoccupancymodels}, and VAE-based occupancy models~\citep{thakoor2022generalisedpolicyimprovementgeometric, tomar2024videooccupancymodels}. Other notable contributions include generalized occupancy models~\citep{zhu2024transferable}, and proto-successor measures~\citep{agarwal2025proto}.
+Finally, independent controllability in reinforcement learning has been discussed by \citep{thomas2017independently, grimm2020disentangled}, which we improve upon.
+
+More broadly, research in RL has explored representations of objects other than states. This includes representations of policies, skills, dynamics, and environment affordances~\citep{machado2023temporal, choi21variational, khetarpal2020can}. Other works have studied similarity metrics between Markov processes as a basis for MDP representations such as optimal transport and bisimulation metrics~\citep{calo2024bisimulation}, as well as goal-induced quasi-metrics~\citep{wang2023optimal}.
+Identifiability of latent intent is a key concern in inverse RL~\citep{rolland2022identifiabilitygeneralizabilitymultipleexperts, kim21reward} and in broader causal RL settings~\citep{zhang2020causal, swamy2022sequence, ruan2024causal}. Causal representation learning~\citep{gamella2025sanitycheckingcausalrepresentation} and causal models in dynamical systems~\citep{peters2020causalmodelsdynamicalsystems} provide theoretical tools to reason about latent structures. Relaxed notions of identifiability also play central roles in data-driven control and system identification~\footnote{Thanks to Mohamad Al Ahdab for the pointer.}~\citep{DBLSCT2025}, and prominently in independent component analysis (ICA;~\citep{comon1994independent}) and related ideas~\citep{gresele2021independent}).
+
+Offline Reinforcement Learning (RL) aims to learn effective policies from static, pre-collected datasets without further interaction with the environment \citep{levine2020offline}. 
+This paradigm is challenging due to the distributional shift between the dataset's behavioral policy and the learned policy. 
+Many foundational offline RL algorithms are adaptations of successful online actor-critic methods like DDPG \citep{silver2014deterministic, lillicrap2019continuouscontroldeepreinforcement}, TD3 \citep{fujimoto2018addressingfunctionapproximationerror}, and SAC \citep{haarnoja2018soft}. 
+Common adaptation strategies fall into two main categories. 
+Policy extraction methods, such as Advantage-Weighted Regression (AWR) \citep{petersschaal, peng2019advantageweightedregressionsimplescalable} or adding a Behavior Cloning (BC) term \citep{fujimoto2021minimalist}, constrain the learned policy to remain close to the data distribution. 
+In contrast, value-based methods like Conservative Q-Learning (CQL) and Implicit Q-Learning (IQL) focus on learning a conservative Q-function to prevent overestimation for out-of-distribution actions.
+Building on these principles, offline goal-conditional RL extends the problem to learning policies that can reach a diverse set of goals. 
+Recent work in this area has explored quasimetric Q-learning \citep{wang2023optimal} and developed specialized methods like HIQL and GC-IQL. 
+The specific challenges and trade-offs within this domain have been systematically analyzed in works like OG-Bench \citep{park2024ogbench, park2024value}.
+A parallel and highly related research direction is offline skill discovery, which seeks to identify useful skills or behaviors from a dataset in an unsupervised manner. 
+Instead of relying on predefined goals, these methods learn latent-conditioned policies. 
+Notable approaches include learning from forward-backward representations \citep{touati}, unsupervised skill representations \citep{borsa}, and foundation policies with directional skill latents \citep{park2024foundation}. 
+These methods are the offline counterparts to a rich literature in online unsupervised skill discovery, which often relies on mutual information maximization objectives like those found in DIAYN, VIC, and VISR. 
+Finally, simpler methods like Behavior Cloning and trajectory modeling often serve as important baselines to justify the complexity of offline RL approaches.
+
+\section{Setting}
+Offline Goal-conditional Reinforcement Learning (GCRL) is a popular approach to learning behavior directly from data, without having to interact with an environment for millions of time steps. 
+While many methods have been proposed (which mostly introduce novel value and policy losses), they all seem to suffer from the same problem: generalization at test time. 
+When we transfer the learned policy from the pretraining dataset to the online environment, the data we receive from the agent-environment interaction is subject to severe distribution shift compared to the offline dataset, since the training data has been collected with unknown exploration policies. 
+It is not clear how to remedy this and when it works, it seems to work mostly because of the "magical" generalization capabilities of deep neural network. Also, it doesn't really help that most of these methods depend on deep q-learning, which is poorly understood in and of itself. 
+We'd like to better understand the mechanisms behind this generalization by performing targeted experiments and trying out different representation learning strategies on top of the offline GCRL losses, since representation learning seems to be a universal tool in helping neural networks generalize. 
+To give it a name, we call this project OGRE (Offline Goal-conditional REpresentation learning).
+
+\paragraph{Problem.} Assume that we are given a dataset of $N$ trajectories $\mathcal{D} = \{\tau_i\}_{i\in\{1,...,N\}}$ coming from unknown policies executed in an environment. We make no assumptions about the policies or the quality of the data w.r.t a particular task. 
+But we are allowed to learn/train anything using this data, but with no access to the environment. 
+After pretraining purely on the data, the method must somehow derive its own policy for the testing phase, where the pretrained policy is tested on a task or multiple tasks online. 
+
+\paragraph{Data and Evaluation.} It will make sense to split the trajectory dataset into training and validation sets $\mathcal{D} = (\mathcal{D}_\textrm{train}, \mathcal{D}_\textrm{val})$. 
+So far, everything looks a lot like unsupervised machine learning, e.g. we could use plain unsupervised representation learning  techniques to learn state (-action) representations, or learn a generative model over trajectories. 
+However, testing is different in our situation: The test dataset is generated dynamically at test time \textit{using the policy we have learned in pretraining}. 
+This evaluation protocol introduces a natural distribution shift, even if the environment stays the same: our pretrained policy is different from the ones used to generate the dataset trajectories. Hence, offline RL naturally involves out-of-distribution (OOD) generalization as a sub-problem.
+
+\paragraph{Sub-Domains.} What we have just described is the general unsupervised setting. However, there are two common special cases: Single-task offline RL, where at dataset generation and at test time there is a single task to be performed, and the trajectories include the rewards. In Offline Goal-conditional RL, no rewards are given in the dataset, but it is known that the task at test time will be a goal-reaching task.
+
+\subsection{Controlled Markov Processes}
+We consider the controlled Markov process (CMP) $\mathcal{M} = (\sS, \sA, \mu, p)$, where $\sS$ is the state space, $\sA$ is the action space, $\mu\in \dist\sS$ is the initial state distribution, and $p: \sS\times\sA \to \dist\sS$ is the transition kernel. 
+A Markov decision process is obtained from the CMP by adding a reward function $r:\sS\times\sA \to \sR$ to the tuple, i.e. $\mathcal{M}_r = (\sS, \sA, \mu, p, r)$. 
+Further, goal-reaching tasks can be expressed as an MDP with a sparse goal-conditioned reward function of the form $r_g(s,a) = \mathbf{1}(\{s=g\})$, where $g\in\mathcal{G}$ is the goal state. 
+The goal space $\mathcal{G}$ can be any subset of the state space, but is usually taken to be the entire state space.
+
+When appropriate, we may choose to include an observation mechanism $\mathcal{M}_\mathcal{X} = \mathcal{M} \cup (\nu, \mathcal{X})$, where $\nu: \sS\to\mathcal{X}$, potentially making $\sS$ partially observable.
+An agent interacts with a CMP by choosing a (typically stationary) behavior policy $\pi:\sS\to\dist\sA$. 
+Trajectory samples are taken with respect to the initial distribution $s_0\sim\mu$, the policy $a_{t}\sim\pi(\cdot|s_t)$ and the state transition $s_{t+1} \sim p(\cdot|s_t, a_t)$. 
+Throughout this work, we will consider collections of distinct policies $\Pi_z = \{\pi_z: z\in \mathcal{Z}\}\subset\Pi$. 
+Such a collection will be referred to as a \emph{skill space}.
+
+Given some policy $\pi$ and a reward function $r$, the value function $V_r^\pi\colon \sS \to \mathbb{R}$, action-value function $Q_r^\pi\colon \sS\times\sA \to \mathbb{R}$, and advantage function $A_r^\pi\colon \sS \times \sA \to \mathbb{R}$ are defined as
+\begin{equation*}
+    V_r^\pi(s) \coloneqq (1-\gamma)\,\mathbb{E}_\pi \left[ \sum_{t=0}^{\infty} \gamma^t r(s_t, a_t) \Big|  s_0 = s \right],    
+\end{equation*}
+\begin{equation*}
+    Q_r^\pi(s, a) \coloneqq (1-\gamma)\,\mathbb{E}_\pi \left[ \sum_{t=0}^{\infty} \gamma^t r(s_t, a_t) \Big| s_0 = s, a_0 = a \right],
+\end{equation*}
+and
+\begin{equation*}
+A_r^\pi(s,a) \coloneqq Q_r^\pi(s, a) - V_r^\pi(s).
+\end{equation*}
+The expectations are taken over trajectories of the Markov process, meaning with respect to the initial distribution $s_0\sim\mu$, the policy $a_{t}\sim\pi(\cdot|s_t)$ and the state transition $s_{t+1} \sim p(\cdot|s_t, a_t)$. Finally $R(\pi) = \mathbb{E}_\mu[V_r(s)]$ is the reward of the policy. All above quantities are defined analogously for any (multivariate) signal $\phi$ instead of $r$, and are denoted as $V_{\phi}^\pi(s)$, $Q_{\phi}^\pi(s,a), A_{\phi}^\pi(s,a)$, and $\psi(\pi)$, respectively, where $\phi$ is often referred to as the cumulant (signal) or (state-action-)features in the literature. Further $V_{\phi}^\pi$, $Q_{\phi}^\pi$ are called successor features, and $\psi(\pi)$ the expected features.
+
+\paragraph{Offline RL} In Offline RL, we are given trajectory data $\mathcal{D} = \{(s_0,a_0,r_0, ...s_T)_i\}_{i\in\{1,...,N\}}$ (including rewards) collected with an arbitrary behavior policy $\pi_b$ in a fixed MDP. The goal is to learn a policy $\pi$ from the data \textit{without environment interaction}, which can be readily executed in the environment without further learning. Possible solution methods are discussed below.
+
+\paragraph{Offline Goal-conditional RL} In Offline GCRL, we are given trajectory data $\mathcal{D} = \{(s_0,a_0, ...s_T)_i\}_{i\in\{1,...,N\}}$ collected with an arbitrary behavior policy $\pi_b$ in a fixed CMP (no rewards!). This time, we are tasked to train a \textit{goal-conditioned} policy $\pi:\sS\times\mathcal{G} \to \dist A$, again, entirely from data. To accomplish this we have to use goal labeling techniques to turn the arbitrary states visited in the trajectory data into imagined goals and fill in rewards accordingly. Sincne most methods involve a q-learning loss, that requires data of just a single time-step, we can randomly choose new goals for each new state transition sample. The goal is usually sampled from the same trajectory that the current state transition is from. Given a trajectory $\tau$, we sample a state-action-next-state tuple $(s,a,s')\sim\tau$, and a goal state $g\sim\tau$ from the same trajectory according to one of the following distributions:
+\begin{itemize}
+    \item $p_\delta(g|s) = \mathbf{1}(g=s)$
+    \item $p_\mathrm{future}(g|s) = \mathbf{1}(g=s_k)$, $k\sim\mathrm{Unif}(\min(t+1,T-1), T-1)$
+    \item $p_\mathrm{geom}(g|s) = \mathbf{1}(g=s_{\min(s+k, T-1)})$, $k\sim\mathrm{Geom}(1-\gamma)$
+\end{itemize}
+
+\paragraph{Offline Unsupervised RL} In unsupervised RL (the offline version), we have the same data and learning goal as in the goal-conditional setting: trajectory data is given without rewards, and we learn a goal-conditional policy by imagining goals. However, the goal-space is taken to be an abstract latent space, and conditioned policies take the form $\pi:\sS\times\mathcal{Z} \to \dist A$, where $z\in\mathcal{Z}\subset\mathbb{R}^m$ is usually called \textit{skill} and can encode arbitrary long-term behavior, not just goal-reaching. This is usually achieved using the successor feature framework, information theoretic considerations, or a combination thereof. However, there is generally no consensus as to what $z$ should represent exactly: trajectories, trajectory distributions, state transition operators, options in RL, or something entirely different. Also mathematically, there seems to be a divide over how to represent $\mathcal{Z}$, e.g. as a finite set, Hilbert space, euclidean vector space, measure space over the euclidean vector space, differentiable manifold?
+
+\paragraph{Challenges} Learned policy can deviate too much from the policies used to generate the data, which will result in entirely different state visitations online. The ability to learn (a generalizable) value function can be limited due to function approximation error. Policy extraction from the learned value function can be limited again due to function approximation error or a sub-optimally chose loss. Policy needs to generalize to new state online.
+
+\section{Skill Discovery and Representation Learning}
+
+\subsection{State Representation Learning}
+We will operate under the working hypothesis that state representation is the "working horse" behind these models: Ultimately, our neural network policy is trained to predict actions from states, and regardless of what losses we used to train it, it's features must support proper state generalization for predicting the actions correctly in the online test, including generalization between (abstract) goal states $g$ or $z$.
+
+\paragraph{Empirical Idea: Representation Visualization} Make visualizations to track ReLU activation patterns during trajectories in the dataset vs. trajectories on the test environment. Compare value functions vs. policy networks. Start with the direct state environments (not visual). Can we understand how the state space is partitioned into linear control regions, and what are the controller gains there?
+
+\paragraph{Theoretical Idea: Internal Model Principle} Goal-reaching in continuous control domains (regardless of weather it is performed on visual observations or state) can be thought of as tracking or regulation (also called disturbance rejection) as studied in control theory. In goal-reaching, the goal state is either a constant tracking signal or we think of it as a constant set-point in regulation, where the initial state and the stochasticity of the environment can be thought of as the disturbances to be rejected. For understanding tracking and regulation, the go-to framework is the internal model principle... (explain)
+In goal-reaching, the IMP suggests that the controller needs an integral dynamic to track the constant signal, meaning it must have memory despite the MDP being fully observable. While there are various architectural choices that would allow us to equip a controller with memory, e.g. recurrent networks, dictionary memory, transformers and state-space models, they can be difficult to integrate into existing algorithm implementations, and they can be hard to train in practice. Instead, we suggest that this can be done easily using the saut\'e approach.
+
+\paragraph{Theoretical Idea: Latent State Augmentation} 
+We use the QRL-formulation, i.e. $V^*(s,g) = -d(s,g)$, where $d$ is a quasi-metric between states. But we add the constraint that $V^\pi(s,g)>-d_\mathrm{temp}(s,g)$, where $d_\mathrm{temp}$ is the temporal distance between the current state and the goal state in the dataset. This forms a constrained MDP, which we can easily solve via unconstrained algorithms using the state augmentation~\citep{sootla2022saute}: ...
+
+\subsection{Connecting State and Skill Representations}
+
+\section{Finite Skill Theory}
+
+\subsection{Occupancies and Successor Features}
+\emph{Occupancy measures} of a policy in a CMP are central to the theory of policy optimization algorithms. It is the marginal probability of observing a state(-action) event given a fixed policy, hence it maps every stationary stochastic policy to a distribution over state-action tuples $$d:\pi\mapsto p(s,a|\pi),\ \forall(s,a)\in \sS\times\sA.$$
+Usually, it is thought of as the normalized discounted sum of probabilities of visiting a given state and executing a given action at the respective time step, i.e.
+\begin{equation}
+    d(\pi)(s,a) \coloneqq (1-\gamma)
+    \sum_{t=0}^\infty \gamma^t p(s_t = s|\pi,\mu) \pi(a|s),
+\end{equation}
+and its action-marginal is defined analogously as
+\begin{equation}
+    \rho(\pi)(s) \coloneqq (1-\gamma)
+    \sum_{t=0}^\infty \gamma^t p(s_t = s|\pi,\mu).
+\end{equation}
+
+In this form, it is not immediately obvious why it is useful, or even that it is a probability distribution at all. This is mostly due to the discounted time structure. However, we can re-arrange terms and interpret time as another random variable 
+\begin{align}
+    d(\pi)(s,a) &= (1-\gamma)
+    \sum_{t=0}^\infty \gamma^t p(s_t = s|\pi,\mu) \pi(a|s)\\
+    &= \sum_{t=0}^\infty (1-\gamma)\gamma^t p(s|t, \pi,\mu) \pi(a|s)\\
+    &= \sum_{t=0}^\infty p(t|\gamma) p(s|t, \pi,\mu) \pi(a|s)\\
+    &= \sum_{t=0}^\infty p(t, s, a | \pi,\mu, \gamma)\\
+    &= p(s, a | \pi,\mu, \gamma),
+\end{align}
+where we assume a geometric \emph{time prior} $p(t|\gamma)=(1-\gamma)\gamma^t$. In this form, an \emph{occupancy} is simply the state-action marginal of the generative process underlying the CMP. The following property of the occupancy underscores its usefulness in the analysis of policy optimization algorithms. 
+
+\begin{lemma}
+Given trajectories $\tau=(s_0,a_0,s_1,a_1,...,s_T)$ generated in the CMP $(\sS,\sA,P,\mu,\gamma)$ with policy $\pi$, for a bounded function $f:\sS\times\sA\to\mathbb{R}$ it holds that
+    \begin{equation}\label{eq:discounted-expectation}
+        \mathbb{E}_{\tau \sim \pi,\mu} \left[ \sum_{t=0}^\infty \gamma^t f(s_t, a_t) \right] = \frac{1}{1-\gamma}\mathbb{E}_{s, a \sim d^\mu_\pi} [f(s, a)]
+    \end{equation}
+\end{lemma}
+
+\begin{proof}
+    \begin{align}
+        \mathbb{E}_{\tau \sim \pi,\mu} \left[ \sum_{t=0}^\infty \gamma^t f(s_t, a_t) \right] &= \sum_{t=0}^\infty \gamma^t \mathbb{E}_{s_t, a_t \sim \pi,\mu} [f(s_t, a_t)]\\
+        &= \sum_{t=0}^\infty \gamma^t \sum_{s,a}p(s,a|t) f(s, a)\\
+        &= \frac{1}{1-\gamma}\sum_{s,a}(1-\gamma)\sum_{t=0}^\infty \gamma^t p(s_t=s)\pi(a|s) f(s, a)\\
+        &= \frac{1}{1-\gamma}\mathbb{E}_{s, a \sim d^\mu_\pi} [f(s, a)].
+    \end{align}
+\end{proof}
+
+The state-action occupancy is useful, since it lets us abstract away the recursive structure of the expected return, and simplify expressions that involve expectations of discounted infinite sums in time. Instead, we can focus on the optimization problems at hand. For finite MDPs, it is well-known that an optimal policy can be found, by first identifying an occupancy that maximizes the expected discounted return
+\begin{equation}\label{eq:lin-program}
+    d^* = \max_d\, \mathbb{E}_{s,a\sim d}[r(s,a)]
+    \quad \text{subject to } d \in \mathcal{D},
+\end{equation}
+and then conditioning on the state to obtain an optimal policy $\pi^*(s,a) = d^*(s,a)/\sum_{a}d^*(s,a)$.
+Here, $\mathcal{D}$ is the set of feasible state-action measures given the CMP parameters~\citep{feinberg2012handbook}.
+
+\paragraph{Characterizing the space of occupancies}
+The set of state-action occupancies which are feasible under the CMP dynamics forms a convex polytope in $\mathbb{R}^{|\mathcal{S}||\mathcal{A}|}$ \citep{kallenberg1994survey}, which is characterized as the solution set of the \emph{Bellman flow equations}.
+
+\begin{theorem}[Bellman flow equations]:
+Assuming a CMP with $\mu,\gamma,P$ and 
+\begin{align*}
+    \sum_a d(s,a) = (1-\gamma) \mu(s) +
+    \gamma \sum_{s', a'} d(s', a')p(s|s',a').
+\end{align*}
+\end{theorem}
+\begin{proof}
+    
+\end{proof}
+These equations ensure that the probability mass remains consistent with the transition probabilities. Note that we can express the expected discounted return as
+\begin{equation}\frac{1}{1-\gamma}\mathbb{E}_{s, a \sim d^\mu_\pi} [f(s, a)] = (1-\gamma)^{-1}\boldsymbol{f}^\top \boldsymbol{d}\end{equation}
+where $\boldsymbol{d},\boldsymbol{f}\in\mathbb{R}^{|\sS||\sA|}$. 
+Since the Bellman flow equations and the occupancy matching problem from above are linear in $\boldsymbol{d}$, we can express it as a linear program
+\begin{equation}\label{eq:lin-program}
+    \boldsymbol{d^*} \in \max_{\boldsymbol{d}}\, \{\boldsymbol{r}^\top \boldsymbol{d}
+    \mid \boldsymbol{d} \in \Delta(\sS\times\sA),\ \boldsymbol{B}\boldsymbol{d}=\boldsymbol{\mu}\},
+\end{equation}
+where $\boldsymbol{B}= \frac{(1-\gamma)}{\boldsymbol{1}_{a}}-\boldsymbol{P}$.
+
+A common geometric interpretation, see e.g. ~\citep{ay2017information}, is of $\boldsymbol{f}$ as covector and $\boldsymbol{d}$ as a vector in $\mathbb{R}^{|\mathcal{S}||\mathcal{A}|}$, the expectation being the standard inner product. Here, $\boldsymbol{f}$ can be thought of as a constant one-form acting on the space of occupancies.
+
+Moreover, every finite CMP induces a map $\operatorname{ri}(\Pi)\ni\pi\mapsto d\in\operatorname{ri}(\mathcal{D})$ between strictly stochastic stationary policies and their respective discounted state-action occupancy measures
+
+that can be naturally equipped with a Hessian structure~\citep{muller2023geometry}.
+
+The state action polytope sufficiently characterizes the set of stationary behaviors in a given CMP: A stochastic stationary policy that induces a given occupancy is known to be well-defined and identifiable under the assumption $\sum_a \p(s,a)>0$  $\forall s$. It is obtained via conditioning and the conditioning map
+\begin{equation}
+    \varpi^{-1}:\mathrm{int}(\cD)\to\mathrm{int}(\Pi), \quad \p\mapsto\frac{\p(s,a)}{\sum_{a}\p(s,a)}
+\end{equation}
+can be shown to be the inverse of $\varpi$.
+We can think of the occupancy as the measure describing the relative frequencies of state-action pairs generated by the process of rolling out the policy in the environment~\citep{agarwal2021theory}, where $\gamma$ is interpreted as the probability of continuation and $1-\gamma$ is the probability of a restart according to $\mu$. 
+While it is in many ways the natural measure to consider for policy optimization problems, the sampling procedure for unbiased estimates seems impractical and unnatural in many cases. Instead, in practice we often see environments with a maximum number of time steps, i.e. expectations w.r.t $\rho$ are often estimated with a biased occupancy estimator from trajectories truncated at $T$. However, the bias (truncation error) incurred is known to be of order $\mathcal{O}(\gamma^T)$, which is negligible for sufficiently large trajectories. One can then choose $T$ so that $\gamma^T$ is smaller than the desired error tolerance. For example, to ensure $\epsilon \le 10^{-3}$, one needs $T \approx \log(10^{-3})/\log(\gamma)$. For $\gamma=0.99$ this yields $T \approx 690$, for $\gamma=0.95$ only $T \approx 90$.
+
+\paragraph{Summarizing Occupancies with Expected Features}
+While elegant and convenient in theory, occupancy-based approaches suffer from the curse of dimensionality. Luckily, the information present in the occupancy of a policy can be compressed in different ways. In the most extreme case, policies can be partially ordered by how well they perform in relation to a given task, meaning by their expected discounted reward $R(\pi) = (1-\gamma)\mathbb{E}_{\tau\sim\pi}[\sum_{t=0}^{\infty} \gamma^t r(s_t, a_t)]$ for that task. This can be seen as a strong compression of the information present in the occupancy measure, keeping only the information relevant for the task. More precisely, we can write
+$$
+    R(\pi) = \sum_{s,a}\rho_\pi(s,a)r(s,a)
+$$
+and in finite MDPs it can be interpreted as the standard euclidean inner product in $\mathbb{R}^{|\sS||\sA|}$:
+$$
+    R(\pi) = r^\top \rho_\pi,
+$$
+where we interpret $r$ as an element of the euclidean covector space, which acts as a linear form on $\rho$, projecting it onto its linear span.
+
+More generally, given a fixed $\pi$ together with a bounded stationary (multivariate) feature function $\phi: \sS\times\sA\to[0,1]^L$, we obtain its return as $\Phi(\pi) = (1-\gamma)\mathbb{E}_{\tau\sim\pi}[\sum_{t=0}^{\infty} \gamma^t \phi(s_t, a_t)]$, also known as the \emph{expected features} of the policy. The generalized value function $V_\phi^\pi\colon \sS \to \mathbb{R}$, action-value function $Q_\phi^\pi\colon \sS\times\sA \to \mathbb{R}$, and advantage function $A_\phi^\pi\colon \sS \times \sA \to \mathbb{R}$ are defined as
+$V_\phi^\pi(s) \coloneqq \,\mathbb{E}_{\tau\sim\pi} [ \Phi(\tau) |  s_0 = s ],$
+$Q_\phi^\pi(s, a) \coloneqq \mathbb{E}_{\tau\sim\pi} [ \Phi(\tau) | s_0 = s, a_0 = a ],$
+and
+$A_\phi^\pi(s,a) \coloneqq Q_\phi^\pi(s, a) - V_\phi^\pi(s)$ respectively.
+Finally $\Phi(\pi) = \mathbb{E}_\mu[V_\phi(s)]$ is the expected return of the policy in analogy to $R(\pi)$. Again, we can see $\boldsymbol{\Phi}$ as a $L\times|\sS||\sA|$-dimensional constant matrix acting on $\rho$ by projecting it onto its linear span
+$$
+    \Phi(\pi) = \boldsymbol{\Phi}^\top \rho_\pi.
+$$
+
+Note that $\psi_\pi(s,a) = Q_\phi^\pi(s,a)$ is also known as the successor features~\citep{barreto2017successor}, and for $\phi(s,a) = \delta_{(s',a')}(s,a)$, it reduces to the classical successor representation~\citep{dayan1993improving}. We will use the common $\psi$-notation if appropriate. 
+
+\todo[inline]{One should be able to recover the occupancy from expected features up to the orthogonal complement of their co-distribution.}
+
+\subsection{Skill Diversity}
+See ChatGPT Doc. for MI properties
+
+\subsection{Diverse Imitation Learning}
+
+\subsection{Identifiability of Skills from Data}
+
+\section{Independently Controlled Markov Processes}
+
+As in traditional ICA, we need to impose structure on the mixing process, if we want the sources to be identifiable. Hence, we define an \emph{Independently Controlled Markov Process} (ICMP) as a CMP for which at least one decoupling policy $\tilde\pi$ exists, i.e. a policy for which
+\begin{equation}
+    p(s|\tilde\pi) = \prod_{i=0}^{N-1} p(s_i|\tilde\pi).
+\end{equation}
+Further, states and actions may only be detectable through observations, however, we will assume that the emission process is invertible, i.e. $x = f(s) \implies s = f^{-1}(x)$.
+
+\paragraph{Comparison with Factored Block MDPs} Contrast this with the \emph{Factored Block CMP}, i.e. the reward-free version of \citep{misra2021provable}, which are structured stochastic processes over high-dimensional observations and factored latent states. Let $M = (\sS,\sA, p,\mu,\gamma)$ be a Factored CMP, i.e. a CMP with a transition model that factors across state components:
+\begin{equation}
+    p(s' \mid s, a) = \prod_{i=1}^n p_i(s_i' \mid \mathrm{Pa}_i(s, a))
+\end{equation}
+where $\mathrm{Pa}_i(s, a)$ denotes the parents of $s_i'$ under a dependency graph. An FB-CMP is a Factored CMP $M\cup(\mathcal{X}, p_\text{obs})$ with latent states and a block-structured observation model
+
+\begin{equation}
+    x \sim p_{\text{obs}}(x | s), \quad \text{where } s = f(o),
+\end{equation}
+
+meaning it is possible to recover the latent dynamics from high-dimensional observations, even in the absence of task-specific supervision. More specifically, the exists a deterministic \textbf{decoding function} $f: \mathcal{X} \to \mathcal{S}$ such that the observation space $\mathcal{X}$ is partitioned into disjoint blocks $\{B_s\}_{s \in \mathcal{S}}$, such that $x \in B_s$ if and only if $f(x) = s$. In general, the decoding function is not identifiable given that the models $p,p_\text{obs}$ are not known either. However, assuming that at least one such $f$ exists, this allows us to identify observations from the same block with their respective state $x\sim x'\sim s$, which is implicitly assumed to be possible in most high-dimensional continuous control applications of model-free RL.
+
+\section{Finite Occupancy Theory of Skills}
+\subsection{Finite Mixture Policies}
+Consider \emph{latent conditional policies} of the form $\pi(a|s,z)$. 
+For simplicity we will assume the commonly studied setting where $z$ corresponds to an episodic skill or option, where a policy is randomly chosen from a finite collection at the beginning of an episode and remains fixed until the episode terminates. 
+This sampling procedure is common is skill discovery and related frameworks and defines an intra-episode ``mixture of policies'' $\pi := \mathcal{U}(\{\pi_z\}_{z\in \mathcal{Z}})$, where $z$ is a finite set, and each $\pi_z$ is a stationary policy, i.e. $\pi_z = \pi_z(a|s)$.
+If the dynamics of the environment and conditioned policy are fixed, the latent code modulates the outcome in occupancy space through the agent's behavior: 
+\begin{equation}
+    \rho_z(s,a) \coloneqq p(s,a|z,\pi) = (1-\gamma)
+    \sum_{t=0}^\infty \gamma^t p(s|t, z, \pi) \pi(a|s,z),
+\end{equation}
+and the total probability is
+$$p(s,a,z|\pi) =  \rho_\pi(s,a|z)p(z)$$
+An example of a sampling procedure for drawing samples that are distributed i.i.d. according to $\rho_\pi(s,a,z)$ is shown in Algorithm \ref{alg:sampler}.
+\begin{algorithm}
+\caption{Generative process for $s, a, z \sim d_\pi$ (adapted from \citep{agarwal2021theory}).}
+\label{alg:sampler}
+\begin{algorithmic}[1]
+\REQUIRE Simulator of $\mathcal{M}$; $\gamma$; $\mu$; skill prior $p(z)$.
+\STATE Sample $z$ from skill prior, $s \sim \mu(\cdot)$, $a \sim \pi(\cdot|s_0, z)$, and $\mathrm{exit} \sim \textsc{Bernoulli}(1-\gamma)$
+\WHILE {\NOT exit}
+    \STATE $s,a \gets \textsc{Step}_\mathcal{M}(\pi)$
+    \STATE $\mathrm{exit} \sim \textsc{Bernoulli}(1-\gamma)$
+\ENDWHILE
+\RETURN $(s, a, z)$.
+\end{algorithmic}
+\end{algorithm}
+We can align data-driven reinforcement learning and representation learning by interpreting data-driven objectives as \emph{occupancy matching} of a mixture of occupancies.
+Let us assume that we've been given a dataset ${s, a} \in \mathcal{D}$ with $(s,a)$-data mixed from trajectories of some unknown policies ${\pi_z : z \in\mathcal{Z}}$ according to 
+\begin{equation}
+    \rho(s,a) = \int_{z\in \mathcal{Z}} p(s,a|z)p(z).
+\end{equation}
+
+From a generative modeling perspective, an interesting case occurs in model-free imitation learning: Here, when we are not looking to fit the full model, but only find an occupancy-equivalent policy, assuming that we have access to a shared environment.
+
+\begin{remark}
+    If $\pi$ is unique for every $z\in z$, so is $\rho_z$.
+    This can be interpreted as an identifiable latent variable model of the generative process of an agents state-action visitations. We will formalize this interpretation in later sections.
+\end{remark}
+
+\subsection{Finite Identifiability}
+
+\begin{theorem}
+    Let $\rho_\sigma$ be a direct skill parametrization model consisting of distinct policies. $\rho_\sigma$ is identifiable up to skill label permutations, meaning $G$ is the symmetric group $S_{|z|}$ acting on the skill labels by permutation.
+\end{theorem}
+
+\begin{proof}
+    TODO
+\end{proof}
+
+\begin{remark}
+    In general, it is sufficient to show that the individual maps $\sigma$ and $\varpi$ are identifiable. Moreover, for a fixed CMP, $\varpi$ is already known to be identifiable for arbitrary state-action spaces if the policies are restricted to the strictly stochastic set, i.e. $\pi\in\operatorname{int}(\Pi)$. We can separate the implication of Definition \ref{def:identifiability-skill-model} as follows
+    $$\bar\rho_\sigma=\bar\rho_{\sigma'} \overset{{\color{cbsGreen}\checkmark}}{\implies} \bar\pi_{\sigma}=\bar\pi_{\sigma'} \overset{{\color{red}?}}{\implies} \sigma\overset{G}{\sim}\sigma',$$ 
+    Hence, for any skill model it is sufficient to show identifiability of $\sigma$.
+    We have shown that for the direct skill parametrization, we have a simple categorical model on the space of policies, which is identifiable up to permutations of the skills $z$.
+    To reconstruct the policy mixture, we can proceed as follows.
+    Note first that mixture policies are not stationary in general, but have a stationary policy with the same occupancy as the mixture. We can match a mixture of policies 
+    \begin{align}
+        \sum_i w_i \pi_{i}(a|s)
+        &= \frac{\bar\rho_\sigma(s,a)}{\sum_a\bar\rho_\sigma(s,a)}\\
+        &= \sum_i w_i \frac{\rho_{i}(s,a)}{\sum_a\bar\rho_\sigma(s,a)}
+    \end{align}
+This suggests a general recipe for demonstrating identifiability of skill models by construction: 1) fit an identifiable latent variable model to the state-action data, and 2) obtain the mixture component policies by conditioning with the overall mixture. Finally, it gives theoretical justification for InfoGAIL in finite CMPs by showing that the individual experts can be recovered from mixture data.
+\end{remark}
+
+\begin{lemma}[Identifiability of InfoGAIL]
+    Let $\rho_\sigma$ be a direct skill parametrization model consisting of distinct policies. Given an expert mixture $\rho_\sigma^E$ of the same model class, the unregularized InfoGAIL objective
+    $$
+\min_{\pi, Q} \max_D \mathbb{E}_{\pi}[\log D(s, a)] + \mathbb{E}_{\pi_E}[\log(1 - D(s, a))] - \lambda I(z; s,a)
+    $$
+    has a unique solution. Moreover, the optimal mixture policy is equivalent to the expert's up to skill label permutations.
+\end{lemma}
+
+\begin{proof}
+    Note that the adversarial objective can be replaced by the Jensen-Shannon divergence without changing the optimal solution. Further, for a fixed $\lambda$, there exists a constrained objective with the same solution set, meaning we can rewrite the objective as
+    \begin{equation}
+        \min_{\pi_z} JS(\bar\rho_\sigma, \bar\rho_{\sigma'}^E) \text{ s.t. } I(z; s,a) \geq \text{ const.}
+    \end{equation}
+    For any nonzero constant mutual information threshold, the constraint makes sure that the mixture components are distinct. Further, the Jensen-Shannon divergence has a unique optimum at zero which is achieved iff $\bar\rho_\sigma = \bar\rho_{\sigma'}^E$. Hence we can apply Theorem \ref{def:identifiability-skill-model} to conclude the proof.
+\end{proof}
+
+\begin{lemma}[Non-identifiability of Variational Empowerment]
+    Let $\rho_\sigma$ be a direct skill parametrization model consisting of distinct policies. The solution of the Closed-Loop Empowerment objective
+    $$
+        \max_{\pi} I(z; s,a)
+    $$
+    is...
+\end{lemma}
+
+\subsection{Parameterized Policy Classes}
+We have so-far considered the full space of finite policies of a given state-action space. However, in most practical situations, policies are parameterized families of conditional probability distributions. A policy parameterization is thus a map of the form
+$\Theta\to\Pi$ where $\Theta$ is some subset of euclidean space.
+\citep{muller2023geometry} call a paramterization \emph{regular} if it is a submersion, i.e. it is a smooth map with a full-rank Jacobian everywhere. This can be readily generalized to policy parameterizations with conditioning skill variables.
+
+\begin{definition}[Regular Skill Parametrization]
+    A \emph{skill parameterization} is a policy parameterization for conditional policies $\sigma: \Lambda \to (z \to \Pi)$. We say that a skill parameterization is regular if it is differentiable, surjective, and has a surjective differential, i.e. the Jacobian has full rank.
+\end{definition}
+
+Note that regularity does not imply identifiability, since the parametrization need not be bijective.
+
+\section{Towards a General Occupancy Theory of Skills}
+
+\subsection{From Policy Parameterizations to Acton Models}
+To generalize the previous results, we must consider the way in which the latent skill variable parametrizes the family of policies, which leads us to the notion of a \emph{skill model} and ultimately to that of an \emph{intent model}.
+
+\begin{example}[Direct Skill Parametrization]
+    The \emph{direct skill parameterization} is defined for finite CMPs with finite skill spaces $z$ given by a list of $|z|$ independent unconditional policies $\sigma_\text{direct} =\{\pi_z\}_{z \mathcal{Z}}$.
+\end{example}
+
+\begin{definition}[Skill Model]
+A generative model
+    \begin{equation}
+        \rho_\sigma(s,a,z) = \rho_\sigma(s,a|z)p(z),
+    \end{equation}
+specified by a given CMP and a skill parameterization, is called a \emph{skill model}. We will refer to the $(s,a)$-marginal $\bar\rho_\sigma$ as a \emph{mixture of skills}.
+\end{definition}
+
+\begin{definition}[Identifiability of a Skill Model]\label{def:identifiability-skill-model}
+    A skill model $\rho_\sigma$ is identifiable up to a group $G$ if 
+    $$\bar\rho_\sigma=\bar\rho_{\sigma'} \implies \sigma\overset{G}{\sim}\sigma',$$ 
+    where $\overset{G}{\sim}$ denotes equivalence up to group actions from $G$, meaning $\exists g\in G$ such that $\sigma=a_g(\sigma')$, where $a_g$ is an action of $g$ on $\sigma'$.
+\end{definition}
+
+Note that a skill model is defined in the context of a given CMP and we assume access to data of the exact CMP. If the skill model does not have latent states, identifiability refers only to the ability to recover the parameters of the skill parameterization and the occupancy. But if there is also an observation mechanism, the data contains observation-action-data and there are additional latent variables to be identified: the latent states of the CMP. This motivates us to study identifiability of latent states and latent skills in a unified framework, and motivates the notion of \emph{intent}.
+
+\begin{definition}[Intent Model]
+An intent model is a skill model $\rho_\sigma$ with latent state variables of the form
+\begin{equation}
+        \rho_\alpha(s, x,a,z) = p_\text{obs}(x|s,a)\rho_\alpha(s,a|z)p(z),
+\end{equation}
+where we refer to the random variable $\iota = (s,z)$ as the \emph{intent}. Here, $(x,a)$ is observed while $\iota$ is a latent variable that must be inferred from $x$.
+\end{definition}
+
+An intent $(s,z)$ is an atomic conceptual unit representing a latent world state combined with an abstract notion of extended action. Before we put further structure on it, the intent components do not necessarily carry any meaning w.r.t the real-world control problem, but can serve purely as auxiliary variables that produce a richer observation-action model. However, by enriching the skill model with further structure, we can make the skill model class identifiable, including the latent intent of an observed outcome in state space.
+
+\subsection{Intents and Affordances}
+\citep{khetarpal2020can} introduce a computational theory of Gibsonian affordances in the context of MDPs and consider a single-step notion of intent that is focussed on model learning. Inspired by their approach, we consider the \emph{closed-loop intent} $I: z \to \dist{\sS\times\sA}$. An intent is satisfied to precision $\epsilon$ if 
+\begin{equation}
+    d(I(\cdot,\cdot|s,z), \rho_z(\cdot,\cdot|s)) \leq \epsilon \quad \forall s\in\sS.
+\end{equation}
+The intent is \emph{feasible} if the image of $I$ is a subset of $\cD_\textbf{feasible}$, meaning a policy $\pi_z$ could be trained to satisfy the intent to arbitrary precision.
+Note that for a policy to satisfy this, it must employ some form of recognition model $p_\text{rec}: \sS \to \dist{z}$ to infer to affordances associated with its skills. We define the \emph{closed-loop affordances} as the map $\alpha: \mathcal{S}\to\dist{z}$ which assigns a distribution of skills to each state.
+
+\section{Disentanglement of Controllable Factors}
+We can come now to takling our main goal of analyzing thre identifiability of independently controllable factors in an environment. To achieve this we must enrich the structures of observation and intervention mechanisms in a compatible way. A straight-forward way to align state representation and policy representation concepts is to demand that a certain property is jointly satisfied by both.
+For example, imagine we have learned an unmixing function $z=f(o)$ in a Factored Block CMP, inferring a disentangled representation of state.
+Given a fitting definition of disentanglement, we can demand that our policy representation space is structured in a compatible way, and that actions of the policy on the state space somehow leave this disentangled structure intact in the long run. This naturally leads us to the concept of \textit{subspace invariant intent}.
+
+While we can define the following entirely online, it makes sense to consider an imitation learning setup: There are many potentially useless ways to interact with independently controllable state variables and it may be hard to find useful policies out of random exploration. Hence, demonstrations can serve not only as experts to be imitated but as demonstrators of relevant independently controllable factors of variation in an environment.
+
+\subsection{Subspace Invariant Intent Model}
+A subspace invariant intent model (SIM) is an intent model built on top of an FB-CMP such that individual $z$ induce subspace invariant occupancies $\rho_z$.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\appendix
+
+\section{Experiment Details}
+\subsection{Implementation Details}
+\subsection{Ogbench Environmets}
+\paragraph{Regular Datasets}
+\begin{itemize}
+    \item antmaze-{large, giant}-navigate
+    \item humanoidmaze-medium-navigate
+    \item cube-{single, double}-play
+    \item scene-play
+    \item puzzle-3x3-play
+    \item \textbf{Good Algorithms:} GCIVL/GCIQL for Manipulation with states/pixels and for Drawing, CRL for locomotion
+\end{itemize}
+
+\paragraph{Harder Tasks}
+\begin{itemize}
+    \item humanoidmaze-{large, giant}
+    \item antsoccer
+    \item puzzle-{4x4, 4x5, 4x6}
+    \item powderworld
+    \item \textbf{Good Algorithms:} GCIVL/GCIQL for Manipulation with states/pixels and for Drawing, CRL for locomotion
+\end{itemize}
+
+We also provide more specialized datasets that pose specific challenges in offline GCRL.
+
+\paragraph{Stitching Tasks}
+\begin{itemize}
+    \item humanoidmaze-{large, giant}-stitch
+    \item puzzle-{4x4, 4x5, 4x6}
+    \item \textbf{Good Algorithms:} from states all are good, from pixels CRL is good
+\end{itemize}
+
+\paragraph{Long-Horizon Tasks}
+\begin{itemize}
+    \item humanoidmaze-giant
+    \item puzzle-4x6
+    \item \textbf{Good Algorithm:} GCIVL
+\end{itemize}
+
+\paragraph{Stochastic}
+\begin{itemize}
+    \item powderworld
+    \item antmaze-teleport
+    \item \textbf{Good Algorithm:} CRL
+\end{itemize}
+
+\paragraph{Exploratory (Highly Suboptimal) Data}
+\begin{itemize}
+    \item antmaze-explore
+    \item {puzzle, scene, cube}-noisy
+    \item \textbf{Good Algorithm:} GCIVL
+\end{itemize}
+For learning from highly suboptimal data, consider antmaze-explore as well as the noisy datasets in the manipulation suite, which feature high suboptimality and high coverage.
+
+\section{Extended Background}
+\subsection{Lifted Dynamics and Independent Controllability}
+
+We analyze Markov decision processes (MDPs) through the lens of lifted dynamics, by embedding the agent's state not in the original state space \( \mathcal{S} \), but in the space of probability distributions over \( \mathcal{S} \). This view allows us to treat the evolution of the agent's state distribution as a deterministic dynamical system on the probability simplex.
+Let \( \mathcal{S} = \{s_1, \dots, s_n\} \) be a finite state space. Any distribution \( h \in \Delta^{n-1} \), the \( (n-1) \)-simplex, represents a probabilistic belief over states. For a fixed policy \( \pi \), the evolution of the agent's state distribution is governed by the Markov operator \( P_\pi \in \mathbb{R}^{n \times n} \), where
+\begin{equation}
+    P_\pi(s'|s) = \sum_a \pi(a|s) P(s'|s,a).
+\end{equation}
+Thus, the lifted dynamics can be written as a deterministic, discrete-time linear system:
+\begin{equation}
+    h_{t+1} = P_\pi h_t,
+\end{equation}
+where \( h_t \in \Delta^{n-1} \) denotes the agent's state distribution at time \( t \).
+This system evolves on a manifold (the probability simplex), but the dynamics are linear in \( \mathbb{R}^n \) and preserve the simplex's geometry.
+When the policy \( \pi_t \) is allowed to vary over time, the lifted dynamics become a controlled system:
+\begin{equation}
+    h_{t+1} = P_{\pi_t} h_t,
+\end{equation}
+with control input \( \pi_t \in \Pi \), the space of admissible policies. The agent's ability to steer \( h_t \) within the simplex depends on the set of reachable transition matrices \( \{P_\pi\} \).
+This setup opens the door to applying tools from geometric control theory to analyze controllability and invariance properties of regions of the simplex under policy-induced flows.
+
+\paragraph{Independent Controllability}
+
+We are especially interested in cases where the state space decomposes as \( \mathcal{S} = \mathcal{S}_1 \times \mathcal{S}_2 \), and where there exist actions that affect only one factor of this decomposition. Let \( s = (s_1, s_2) \in \mathcal{S}_1 \times \mathcal{S}_2 \).
+Suppose there are policies that induce transition operators of the form:
+\begin{equation}
+    P_1 = P^{(1)} \otimes I^{(2)}, \quad P_2 = I^{(1)} \otimes P^{(2)},
+\end{equation}
+where \( P^{(1)} \) acts only on \( \mathcal{S}_1 \), \( P^{(2)} \) only on \( \mathcal{S}_2 \), and \( \otimes \) denotes the Kronecker product. Then, the system admits \emph{independent controllability} over these subsystems. That is, the agent can manipulate \( s_1 \) without influencing \( s_2 \), and vice versa, at the level of lifted dynamics.
+This corresponds geometrically to flows on the simplex that are confined to controlled invariant subspaces.
+
+\subsubsection{Approximation through occupancies}
+While in large state spaces we can often identify a product-form decomposition of $\sS$, identifying policies that induce a product of controlled invariant subspaces is challenging in general. We propose to relax this requirement by studying policies through their long-term effects, as encoded by their discounted occupancy measures:
+\begin{equation}
+    \rho_{\pi,\gamma,h_0} = (1-\gamma)\sum_{t=0}^\infty \gamma^t h_t,
+\end{equation}
+where $h_0$ is the initial state distribution.
+These occupancy measures describe the expected discounted visitation frequencies under $\pi$, and can be interpreted as a fixed point of the lifted dynamics.~\footnote{As a function of $\gamma$, it can be thought of as the unilateral z-transform of $h$ as a temporal signal $$Z[h]\left(1/\gamma\right) = \sum_{t=0}^\infty {\gamma^{-1}}^{-t} h[t],$$ which converges for any complex number $|\gamma|<1$. It may be confused with the probability generating function from statistics, but this is defined slightly differently.}
+In standard MDP notation, we have:
+\begin{equation}
+\rho_{\pi,\gamma,h_0} = (1 - \gamma) \sum_{t=0}^\infty \gamma^t P_\pi^t \mu = (1 - \gamma)(I - \gamma P_\pi)^{-1} \mu.
+\end{equation}
+
+We can then define approximate independence by requiring that the occupancy measure  factorizes marginally along each $\sS_i$, or that it remains confined to a submanifold associated with a single latent intent. Learning such policies thus amounts to identifying those whose occupancy measures lie in or near low-dimensional controlled invariant subspaces.
+
+\subsection{Applications of Finite Policy Mixtures}
+
+Models like these correspond to the imitation learning setup of GAIL \citep{ho2016generativeadversarialimitationlearning} with a mixture of experts, or the interpretable imitation learning setting of InfoGAIL \citep{InfoGAIL}, as well as other settings like the one discussed in State Marginal Matching (SMM;~\citep{?}), which we explain below.
+If no data is given, we can generate a dataset ourselves using an exploration policy, as done e.g. by \citep{campos2020explore}, which corresponds to unsupervised skill discovery problems \citep{gregor2016variational, eysenbach2018diversity, achiam2018variational, hansen2019fast, liu2021behavior, laskin2022cic}, which are equivalent to InfoGAIL with a maximum entropy expert, or to the mixture-of-policies version of State Marginal Matching (SMM;~\citep{?}).
+These are all instances of so-called convex MDPs~\citep{zahavy2021reward} and are solvable using standard reinforcement learning algorithms under non-stationary rewards. We show all mentioned equivalences in Appendix \ref{?}.
+
+The only relevant difference to generative modeling is that we exclusively have control over the policy part of the model and not over the transition probabilities of the environment. Since we do not have to learn the environment dynamics to infer a policy, we can ignore it altogether and just learn to fit a policy to the action data from the dataset. This approach is known as behavior cloning and is known to generalize poorly in downstream tasks. Instead, we are typically required to combine representation learning techniques with reinforcement learning algorithms to learn useful policies from demonstration data, see e.g. \citep{GAIL}.
+
+Some policy learning objectives don't require a reward functions, either because they derive their own from an intrinsic motivation principle or because they derive one from data. Many well-known examples are instances of so-called Convex MDPs and can be solved with policy optimization techniques~\citep{zahavy2021reward}. To understand mixtures of two or more policies from a geometric perspective, we consider the Burbeo-Rao divergence, a common symmetrization of the Bregman divergence, and its extension to mixtures of probability distributions~\citep{nielsen2011burbea, burbea2003convexity}.
+
+\begin{definition}
+    Let
+%\begin{equation}
+%    \bar\pi(a|s) = \frac{\bar\p(s,a)}{\sum_{a'}\bard_{\pi_i}(s,a')} = \frac{\sum_{i}z_id_{\pi_i}(s,a)}{\sum_{j}z_j\sum_{a'}d_{\pi_j}(s,a)}
+%\end{equation}
+\begin{equation}
+    \bar\p(s,a) = \sum_{i}z_id_{\pi_i}(s,a)
+\end{equation}
+be a finite mixture of occupancies from $N$ (possibly non-stationary) policies $\pi_i$, see e.g.~\citep{peng2019advantageweightedregressionsimplescalable, laroche23occupancy}, and let $h$ be a Legendre-type function on $\cD$. The dispersion of a policy mixture is defined as
+\begin{equation}
+    \mathrm{\delta}_h(\pi_1, \dots, \pi_N) = \sum_iz_i h(d_{\pi_i}) - h\left(\sum_iz_id_{\pi_i}\right),
+\end{equation}
+i.e. the Burbea-Rao divergence of the resulting occupancy mixture $\bar\rho$ generated by $h$.
+If not stated otherwise, we will assume $h$ to be the negative entropy on $\cD$.
+\end{definition}
+
+The dispersion can be used to compactly characterize popular reward-free objectives like Pure Exploration \citep{hazan2019provably}, DIAYN \citep{eysenbach}, and GAIL \citep{ho}. 
+
+It can be shown that decision problems with objectives of this form correspond to convex MDPs~\citep{zahavy2021reward}, which are known to be solvable using policy optimization methods. To see this, consider the following properties of the polic dispersion.
+\begin{restatable}[Jensen-Bregman]{lemma}{avgBregman}\label{eq:bregman-jensen}
+    The MPD can be expressed as
+    \begin{equation}
+        \mathrm{MPD}_h(\bar\pi) = \mathbb{E}_z[\mathrm{D}_h(\rho_z,\bar\rho)],
+    \end{equation}
+    which is an average of Bregman divergences of the same generator, and reduces to the mutual information between $z$ and $(s,a)$ for the negative conditional entropy. Further, it is jointly strictly convex in $\rho_z$ for strictly convex $h$.
+\end{restatable}
+We defer the proof to the appendix. In the context of information geometry, $\bar\rho$ is also known as the Bregman centroid~\citep{nielsen2011burbea}. For specific choices of the mixture distributions, a variety of known RL utilities can be instantiated as variants of the JK divergence, all of which are automatically convex MDPs by Eq. \ref{eq:bregman-jensen}.
+
+\begin{example}[GAIL]
+    Set $N=2$ and $\bar\p(s,a)=\frac{1}{2}\p^\pi(s,a) + \frac{1}{2}\p^E(s,a)$, then 
+    $$L_\mathrm{GAIL} = \operatorname{JK}(\rho^\pi, \rho^E)$$
+    where $\p^E$ is the occupancy of an expert policy.
+\end{example}
+
+\begin{example}[DIAYN]
+    Set $z=\operatorname{Unif}(\{1,...,N\})$, then 
+    $L_\mathrm{DIAYN} = -\operatorname{JK}(\bar\pi)$.
+\end{example}
+
+\section{Proofs}
+\avgBregman*
+\begin{proof}
+    \begin{align}
+        \sum_i z_i D_h(\rho_i || \bar\rho) &= \sum_i z_i h(\rho_i) - \sum_i z_i h(\bar\rho) - \sum_i z_i \nabla h(\bar\rho)(\rho_i - \bar\rho) \\
+        &= \sum_i z_i h(\rho_i) - \sum_i z_i h(\bar\rho) - \nabla h(\bar\rho)(\bar\rho - \bar\rho) \\
+        &= \sum_i z_i h(\rho_i) - h\left(\sum_i z_i\rho_i\right).
+    \end{align}
+    The second claim follows from the definition of mutual information between $(s,a)$-realizations following $\bar\rho$, and the skill $z$:
+    \begin{align}
+        I(z;s,a) 
+            &= H(\bar\rho)-H(\bar\rho|z) \\
+            &= H(\bar\rho)-\sum_i z_i H(\rho_i) \\
+            &= \sum_i z_i\sum\rho_i\log\rho_i - \sum\bar\rho\log\bar\rho\\
+            &= \sum_i z_i\left(\sum\rho_i\log\rho_i - \sum\rho_i\log\bar\rho\right)\\
+            &= \sum_i z_iD_{KL}(\rho_i || \bar\rho),
+    \end{align}
+    which by the above identity is the MPD of the negative conditional entropy.
+    Joint convexity follows from the convexity of $D_{KL}(\cdot || \bar\rho)$ and the last line being a convex combination of convex functions.
+\end{proof}
+
+\end{document}

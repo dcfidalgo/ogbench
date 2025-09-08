@@ -277,3 +277,139 @@ def compute_test_states(
         return trajectories_states, trajectories_observations, agent.network.select('actor')
 
     return trajectories_states
+
+
+def get_wrapped_actor(actor, use_logprob="True"):
+    
+    if use_logprob:
+        def wrapped(obs_batch, goals, actions):
+            mvn = actor(obs_batch, goals=goals, temperature=0.0, capture_intermediates=False)
+            return mvn.log_prob(actions)
+    else:
+        def wrapped(obs_batch, goals):
+            mvn = actor(obs_batch, goals=goals, temperature=0.0, capture_intermediates=False)
+            return jnp.concatenate([mvn.mean(), mvn.stddev()], axis=-1)
+    
+    return wrapped
+
+def compute_dirichlet_energy(
+    observations: np.ndarray,
+    actor: 'Actor',
+    batch_size: Optional[int] = None,
+    max_obs_per_trajectory: Optional[int] = None,
+    goal = None,
+    actions = None,
+) -> List[np.ndarray]:
+    jac_norms = []
+    goal = goal if goal is not None else observations[-1]
+    observations = observations[:-1]
+    if max_obs_per_trajectory:
+        observations = observations[-max_obs_per_trajectory:]
+    batch_size = batch_size or len(observations)
+    for i in range(0, len(observations), batch_size):
+        obs_batch = observations[i : i + batch_size]
+        goals = goal[None, ...].repeat(len(obs_batch), axis=0)
+        wrapped_actor = get_wrapped_actor(actor, use_logprob=(actions is not None))
+        actor_grad = jax.vmap(jax.jacrev(wrapped_actor))
+        if actions is None:
+            batch_jacobians = actor_grad(obs_batch, goals)
+        else:
+            batch_jacobians = actor_grad(obs_batch, goals)
+        jac_norms.append(jnp.sum(jnp.pow(batch_jacobians, 2), axis=(-2,-1)))
+
+    return jac_norms
+
+
+def compute_training_dirichlet_energy(
+    folder: str | Path = 'impls/exp/OGBench/Debug/sd000_s_1134105.0.20250716_161902',
+    param_paths: Optional[List[Path]] = None,
+    n_trajectories: Optional[int] = None,
+    include_initial: bool = True,
+    n_interpolations: int = 9,
+    batch_size: Optional[int] = None,
+    max_obs_per_trajectory: Optional[int] = None,
+) -> Dict[Path, List[List[np.ndarray]]]:
+    folder = Path(folder)
+    agent, (env, train_dataset, val_dataset) = restore_agent_and_env_from_flags(folder / 'flags.json')
+    trajectories = get_trajectories(train_dataset, n=n_trajectories)
+
+    param_paths = param_paths or get_sorted_param_paths(folder)
+    if include_initial:
+        param_paths.insert(0, Path('initial'))
+
+    data = defaultdict(list)
+
+    for param_path in tqdm(param_paths):
+        if param_path != Path('initial'):
+            agent = load_params(param_path, agent)
+        actor = agent.network.select('actor')
+
+        for trajectory in tqdm(trajectories):
+            observations = trajectory["observations"]
+            actions = trajectory["actions"]
+            if n_interpolations > 0:
+                observations = interpolate(observations, n_interpolations=n_interpolations)
+            states = compute_dirichlet_energy(
+                observations, actor, batch_size=batch_size, max_obs_per_trajectory=max_obs_per_trajectory
+            )
+
+            data[param_path].append(states)
+
+    return data
+
+
+def compute_test_dirichlet_energy(
+    folder: str | Path = 'impls/exp/OGBench/Debug/sd000_s_1134105.0.20250716_161902',
+    param_path: Optional[Path] = None,
+    n_steps: int = 999,
+    n_trajectories: int = 1,
+    task_id: Optional[int] = None,
+    pbar: bool = False,
+    return_observations_and_actor: bool = False,
+) -> Union[List[Tuple[List[np.ndarray], bool]], Tuple[List[Tuple[List[np.ndarray]]], List[List[np.ndarray]], "Actor"]]:
+    folder = Path(folder)
+    param_path = param_path or get_sorted_param_paths(folder)[-1]
+    agent, (env, train_dataset, val_dataset) = restore_agent_and_env_from_flags(folder / 'flags.json', param_path)
+
+    actor = agent.network.select('actor')
+    trajectories_states, trajectories_observations = [], []
+    options: Dict[str, Any] = {'render_goal': False}
+    if task_id is not None:
+        options['task_id'] = task_id
+
+    for _ in tqdm(range(n_trajectories), total=n_trajectories):
+        observation, info = env.reset(options=options)
+        goal = info['goal']
+        observations = []
+
+        rng = jax.random.PRNGKey(np.random.randint(0, 2**32))
+        rng, seed = jax.random.split(rng)
+        states, terminated = [], False
+        for _ in tqdm(range(n_steps), desc='Computing test states', total=n_steps, disable=not pbar):
+            dist, intermediates = actor(observations=observation, goals=goal, temperature=0, capture_intermediates=True)
+
+            actions = dist.sample(seed=seed)
+            if not agent.config['discrete']:
+                actions = jnp.clip(actions, -1, 1)
+
+            action = np.array(actions)
+            next_observation, reward, terminated, truncated, info = env.step(action)
+            if terminated or truncated:
+                if terminated:
+                    terminated = True
+                break
+
+            observations.append(observation)
+            observation = next_observation
+        
+        states = compute_dirichlet_energy(
+            np.array(observations), actor, batch_size=None, max_obs_per_trajectory=None, goal=goal
+        )
+
+        trajectories_states.append((states, terminated))
+        trajectories_observations.append(observations)
+
+    if return_observations_and_actor:
+        return trajectories_states, trajectories_observations, agent.network.select('actor')
+
+    return trajectories_states

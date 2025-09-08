@@ -10,6 +10,15 @@ dependencies = [
     "mujoco >= 3.1.6",
     "dm_control >= 1.0.20",
     "gymnasium[mujoco]",
+    "jax[cuda12] >= 0.4.26",
+    "flax >= 0.8.4",
+    "distrax >= 0.1.5",
+    "ml_collections",
+    "matplotlib",
+    "moviepy",
+    "wandb",
+    "ipykernel",
+    "seaborn>=0.13.2",
 ]
 authors = [
     { name = "Seohong Park" },
@@ -50,3 +59,8 @@ line-length = 120
 
 [tool.ruff.format]
 quote-style = "single"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.1",
+]

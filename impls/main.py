@@ -41,6 +41,8 @@ flags.DEFINE_integer('eval_on_cpu', 1, 'Whether to evaluate on CPU.')
 
 config_flags.DEFINE_config_file('agent', 'agents/gciql.py', lock_config=False)
 
+os.environ["WANDB_MODE"] = "offline"
+os.environ["MUJOCO_GL"] = "osmesa"
 
 def main(_):
     # Set up logger.

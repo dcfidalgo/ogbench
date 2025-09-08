@@ -1,7 +1,0 @@
-Bootstrap: docker
-From: nvcr.io/nvidia/jax:24.04-py3
-
-%post
-apt-get -y update
-apt-get -y install libglfw3 libglew-dev libosmesa6
-pip install jax ogbench flax distrax ml_collections matplotlib moviepy wandb

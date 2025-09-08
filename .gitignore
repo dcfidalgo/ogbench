@@ -1,4 +1,8 @@
 exp/
+raven/slurm_logs/
+*.ipynb_checkpoints/
+uv.lock
+
 __pycache__/
 dist/
 *.py[cod]

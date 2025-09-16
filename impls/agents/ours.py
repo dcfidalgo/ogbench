@@ -392,9 +392,9 @@ def get_config():
             discount=0.99,  # Discount factor.
             tau=0.005,  # Target network update rate.
             expectile=0.9,  # IQL expectile.
-            actor_loss='ddpgbc',  # Actor loss type ('awr' or 'ddpgbc').
-            alpha=0.1,  # Temperature in AWR or BC coefficient in DDPG+BC.
-            lam=0.2,  # State-proximal Policy Extraction (SPE) parameter
+            actor_loss='awr',  # Actor loss type ('awr' or 'ddpgbc').
+            alpha=0.2,  # Temperature in AWR or BC coefficient in DDPG+BC.
+            lam=0.02,  # State-proximal Policy Extraction (SPE) parameter
             const_std=True,  # Whether to use constant standard deviation for the actor.
             discrete=False,  # Whether the action space is discrete.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).

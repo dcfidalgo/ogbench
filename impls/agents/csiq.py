@@ -8,11 +8,26 @@ import ml_collections
 import optax
 from utils.encoders import GCEncoder, encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
-from utils.networks import GCActor, GCBilinearValue, GCDiscreteActor, GCDiscreteBilinearCritic, GCValue
+from utils.networks import GCActor, GCDiscreteActor, GCDiscreteCritic, GCValue
 
 
-class Ours(flax.struct.PyTreeNode):
-    """Our agent."""
+def dirichlet_energy_fd(apply_fn, params, inputs, key, epsilon=1e-3, num_samples=1):
+    outputs = apply_fn(params, inputs)  # [batch, out_dim]
+    def single_estimate(subkey):
+        noise = jax.random.normal(subkey, shape=inputs.shape)
+        outputs_perturbed = apply_fn(params, inputs + epsilon * noise)
+        diff = (outputs_perturbed - outputs) / epsilon
+        return jnp.mean(jnp.sum(diff**2, axis=-1))
+    keys = jax.random.split(key, num_samples)
+    estimates = jax.vmap(single_estimate)(keys)
+    return jnp.mean(estimates)
+
+
+class CSIQAgent(flax.struct.PyTreeNode):
+    """Conditional Smooth Implicit Q-Learning (CSIQ) agent.
+
+    This implementation supports both AWR (actor_loss='awr') and DDPG+BC (actor_loss='ddpgbc') for the actor loss.
+    """
 
     rng: Any
     network: Any
@@ -26,9 +41,9 @@ class Ours(flax.struct.PyTreeNode):
 
     def value_loss(self, batch, grad_params):
         """Compute the IQL value loss."""
-        q1, q2 = self.network.select('target_off_critic')(batch['observations'], batch['value_goals'], batch['actions'])
+        q1, q2 = self.network.select('target_critic')(batch['observations'], batch['value_goals'], batch['actions'])
         q = jnp.minimum(q1, q2)
-        v = self.network.select('off_value')(batch['observations'], batch['value_goals'], params=grad_params)
+        v = self.network.select('value')(batch['observations'], batch['value_goals'], params=grad_params)
         value_loss = self.expectile_loss(q - v, q - v, self.config['expectile']).mean()
 
         return value_loss, {
@@ -40,10 +55,10 @@ class Ours(flax.struct.PyTreeNode):
 
     def critic_loss(self, batch, grad_params):
         """Compute the IQL critic loss."""
-        next_v = self.network.select('off_value')(batch['next_observations'], batch['value_goals'])
+        next_v = self.network.select('value')(batch['next_observations'], batch['value_goals'])
         q = batch['rewards'] + self.config['discount'] * batch['masks'] * next_v
 
-        q1, q2 = self.network.select('off_critic')(
+        q1, q2 = self.network.select('critic')(
             batch['observations'], batch['value_goals'], batch['actions'], params=grad_params
         )
         critic_loss = ((q1 - q) ** 2 + (q2 - q) ** 2).mean()
@@ -54,69 +69,34 @@ class Ours(flax.struct.PyTreeNode):
             'q_max': q.max(),
             'q_min': q.min(),
         }
+    
+    @staticmethod
+    def mvn_vec(mvn):
+        return jnp.concatenate([mvn.mean(), mvn.stddev()], axis=-1)
+    
+    def actor_dirichlet_loss(self, batch, grad_params, subkey, epsilon):
+        """Compute the Dirichlet loss for the actor network."""
+        noise = jax.random.normal(subkey, shape=batch['observations'].shape)
 
-    def contrastive_loss(self, batch, grad_params, module_name='on_critic'):
-        """Compute the contrastive value loss for the Q or V function."""
-        batch_size = batch['observations'].shape[0]
+        dist = self.network.select('actor')(batch['observations'], batch['actor_goals'], params=grad_params)
+        dist_perturbed = self.network.select('actor')(batch['observations'] + epsilon * noise, batch['actor_goals'], params=grad_params)
 
-        if module_name == 'on_critic':
-            actions = batch['actions']
-        else:
-            actions = None
-        v, phi, psi = self.network.select(module_name)(
-            batch['observations'],
-            batch['value_goals'],
-            actions=actions,
-            info=True,
-            params=grad_params,
-        )
-        if len(phi.shape) == 2:  # Non-ensemble.
-            phi = phi[None, ...]
-            psi = psi[None, ...]
-        logits = jnp.einsum('eik,ejk->ije', phi, psi) / jnp.sqrt(phi.shape[-1])
-        # logits.shape is (B, B, e) with one term for positive pair and (B - 1) terms for negative pairs in each row.
-        I = jnp.eye(batch_size)
-        contrastive_loss = jax.vmap(
-            lambda _logits: optax.sigmoid_binary_cross_entropy(logits=_logits, labels=I),
-            in_axes=-1,
-            out_axes=-1,
-        )(logits)
-        contrastive_loss = jnp.mean(contrastive_loss)
+        diff = (self.mvn_vec(dist_perturbed) - self.mvn_vec(dist)) / epsilon
+        dirichlet_loss = jnp.mean(jnp.sum(diff**2, axis=-1))
 
-        # Compute additional statistics.
-        v = jnp.exp(v)
-        logits = jnp.mean(logits, axis=-1)
-        correct = jnp.argmax(logits, axis=1) == jnp.argmax(I, axis=1)
-        logits_pos = jnp.sum(logits * I) / jnp.sum(I)
-        logits_neg = jnp.sum(logits * (1 - I)) / jnp.sum(1 - I)
-
-        return contrastive_loss, {
-            'contrastive_loss': contrastive_loss,
-            'v_mean': v.mean(),
-            'v_max': v.max(),
-            'v_min': v.min(),
-            'binary_accuracy': jnp.mean((logits > 0) == I),
-            'categorical_accuracy': jnp.mean(correct),
-            'logits_pos': logits_pos,
-            'logits_neg': logits_neg,
-            'logits': logits.mean(),
+        return dirichlet_loss, {
+            'actor_dirichlet_loss': dirichlet_loss,
         }
 
     def actor_loss(self, batch, grad_params, rng=None):
         """Compute the actor loss (AWR or DDPG+BC)."""
         if self.config['actor_loss'] == 'awr':
             # AWR loss.
-            v = self.network.select('on_value')(batch['observations'], batch['actor_goals'])
-            q1, q2 = self.network.select('on_critic')(batch['observations'], batch['actor_goals'], batch['actions'])
+            v = self.network.select('value')(batch['observations'], batch['actor_goals'])
+            q1, q2 = self.network.select('critic')(batch['observations'], batch['actor_goals'], batch['actions'])
             q = jnp.minimum(q1, q2)
-            on_adv = q - v
+            adv = q - v
 
-            v = self.network.select('off_value')(batch['observations'], batch['actor_goals'])
-            q1, q2 = self.network.select('off_critic')(batch['observations'], batch['actor_goals'], batch['actions'])
-            q = jnp.minimum(q1, q2)
-            off_adv = q - v
-
-            adv = (off_adv - self.config['lam']*on_adv)
             exp_a = jnp.exp(adv * self.config['alpha'])
             exp_a = jnp.minimum(exp_a, 100.0)
 
@@ -148,13 +128,8 @@ class Ours(flax.struct.PyTreeNode):
                 q_actions = jnp.clip(dist.mode(), -1, 1)
             else:
                 q_actions = jnp.clip(dist.sample(seed=rng), -1, 1)
-            q1, q2 = self.network.select('on_critic')(batch['observations'], batch['actor_goals'], q_actions)
-            on_q = jnp.minimum(q1, q2)
-
-            q1, q2 = self.network.select('off_critic')(batch['observations'], batch['actor_goals'], q_actions)
-            off_q = jnp.minimum(q1, q2)
-
-            q = off_q-self.config['lam']*on_q
+            q1, q2 = self.network.select('critic')(batch['observations'], batch['actor_goals'], q_actions)
+            q = jnp.minimum(q1, q2)
 
             # Normalize Q values by the absolute mean to make the loss scale invariant.
             q_loss = -q.mean() / jax.lax.stop_gradient(jnp.abs(q).mean() + 1e-6)
@@ -183,30 +158,27 @@ class Ours(flax.struct.PyTreeNode):
         info = {}
         rng = rng if rng is not None else self.rng
 
-        critic_loss, critic_info = self.contrastive_loss(batch, grad_params, 'on_critic')
-        for k, v in critic_info.items():
-            info[f'on_critic/{k}'] = v
-        
-        # We use IQL for the off-policy critic loss
+        value_loss, value_info = self.value_loss(batch, grad_params)
+        for k, v in value_info.items():
+            info[f'value/{k}'] = v
+
         critic_loss, critic_info = self.critic_loss(batch, grad_params)
         for k, v in critic_info.items():
-            info[f'on_critic/{k}'] = v
-
-        if self.config['actor_loss'] == 'awr':
-            value_loss, value_info = self.contrastive_loss(batch, grad_params, 'on_value')
-            for k, v in value_info.items():
-                info[f'value/{k}'] = v
-        else:
-            value_loss = 0.0
+            info[f'critic/{k}'] = v
 
         rng, actor_rng = jax.random.split(rng)
         actor_loss, actor_info = self.actor_loss(batch, grad_params, actor_rng)
         for k, v in actor_info.items():
             info[f'actor/{k}'] = v
+        
+        rng, noise_rng = jax.random.split(rng)
+        actor_dirichlet_loss, actor_dirichlet_info = self.actor_dirichlet_loss(batch, grad_params, noise_rng, epsilon=self.config["actor_noise"])
+        for k, v in actor_dirichlet_info.items():
+            info[f'actor_complexity/{k}'] = v
 
-        loss = critic_loss + value_loss + actor_loss
+        loss = value_loss + critic_loss + actor_loss + self.config["actor_reg_weight"]*actor_dirichlet_loss
         return loss, info
-    
+
     def target_update(self, network, module_name):
         """Update the target network."""
         new_target_params = jax.tree_util.tree_map(
@@ -225,7 +197,7 @@ class Ours(flax.struct.PyTreeNode):
             return self.total_loss(batch, grad_params, rng=rng)
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
-        self.target_update(new_network, 'off_critic')
+        self.target_update(new_network, 'critic')
 
         return self.replace(network=new_network, rng=new_rng), info
 
@@ -273,72 +245,32 @@ class Ours(flax.struct.PyTreeNode):
         encoders = dict()
         if config['encoder'] is not None:
             encoder_module = encoder_modules[config['encoder']]
-            encoders['critic_state'] = encoder_module()
-            encoders['critic_goal'] = encoder_module()
+            encoders['value'] = GCEncoder(concat_encoder=encoder_module())
+            encoders['critic'] = GCEncoder(concat_encoder=encoder_module())
             encoders['actor'] = GCEncoder(concat_encoder=encoder_module())
-            if config['actor_loss'] == 'awr':
-                encoders['value_state'] = encoder_module()
-                encoders['value_goal'] = encoder_module()
-        
-        off_value_def = GCValue(
-                hidden_dims=config['value_hidden_dims'],
-                layer_norm=config['layer_norm'],
-                ensemble=False,
-                gc_encoder=encoders.get('value'),
-            )
 
         # Define value and actor networks.
+        value_def = GCValue(
+            hidden_dims=config['value_hidden_dims'],
+            layer_norm=config['layer_norm'],
+            ensemble=False,
+            gc_encoder=encoders.get('value'),
+        )
+
         if config['discrete']:
-            on_critic_def = GCDiscreteBilinearCritic(
+            critic_def = GCDiscreteCritic(
                 hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
                 layer_norm=config['layer_norm'],
                 ensemble=True,
-                value_exp=False,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
-                action_dim=action_dim,
-            )
-            off_critic_def = GCDiscreteBilinearCritic(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=True,
-                value_exp=False,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
+                gc_encoder=encoders.get('critic'),
                 action_dim=action_dim,
             )
         else:
-            on_critic_def = GCBilinearValue(
+            critic_def = GCValue(
                 hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
                 layer_norm=config['layer_norm'],
                 ensemble=True,
-                value_exp=False,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
-            )
-            off_critic_def = GCBilinearValue(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=True,
-                value_exp=False,
-                state_encoder=encoders.get('critic_state'),
-                goal_encoder=encoders.get('critic_goal'),
-            )
-
-        if config['actor_loss'] == 'awr':
-            # AWR requires a separate V network to compute advantages (Q - V).
-            on_value_def = GCBilinearValue(
-                hidden_dims=config['value_hidden_dims'],
-                latent_dim=config['latent_dim'],
-                layer_norm=config['layer_norm'],
-                ensemble=False,
-                value_exp=False,
-                state_encoder=encoders.get('value_state'),
-                goal_encoder=encoders.get('value_goal'),
+                gc_encoder=encoders.get('critic'),
             )
 
         if config['discrete']:
@@ -357,16 +289,11 @@ class Ours(flax.struct.PyTreeNode):
             )
 
         network_info = dict(
-            on_critic=(on_critic_def, (ex_observations, ex_goals, ex_actions)),
-            off_critic=(off_critic_def, (ex_observations, ex_goals, ex_actions)),
-            target_off_critic=(copy.deepcopy(off_critic_def), (ex_observations, ex_goals, ex_actions)),
+            value=(value_def, (ex_observations, ex_goals)),
+            critic=(critic_def, (ex_observations, ex_goals, ex_actions)),
+            target_critic=(copy.deepcopy(critic_def), (ex_observations, ex_goals, ex_actions)),
             actor=(actor_def, (ex_observations, ex_goals)),
-            off_value=(off_value_def, (ex_observations, ex_goals)),
         )
-        if config['actor_loss'] == 'awr':
-            network_info.update(
-                on_value=(on_value_def, (ex_observations, ex_goals)),
-            )
         networks = {k: v[0] for k, v in network_info.items()}
         network_args = {k: v[1] for k, v in network_info.items()}
 
@@ -375,6 +302,9 @@ class Ours(flax.struct.PyTreeNode):
         network_params = network_def.init(init_rng, **network_args)['params']
         network = TrainState.create(network_def, network_params, tx=network_tx)
 
+        params = network_params
+        params['modules_target_critic'] = params['modules_critic']
+
         return cls(rng, network=network, config=flax.core.FrozenDict(**config))
 
 
@@ -382,35 +312,36 @@ def get_config():
     config = ml_collections.ConfigDict(
         dict(
             # Agent hyperparameters.
-            agent_name='ours',  # Agent name.
+            agent_name='csiq',  # Agent name.
             lr=3e-4,  # Learning rate.
             batch_size=1024,  # Batch size.
             actor_hidden_dims=(512, 512, 512),  # Actor network hidden dimensions.
             value_hidden_dims=(512, 512, 512),  # Value network hidden dimensions.
-            latent_dim=512,  # Latent dimension for phi and psi.
             layer_norm=True,  # Whether to use layer normalization.
             discount=0.99,  # Discount factor.
             tau=0.005,  # Target network update rate.
             expectile=0.9,  # IQL expectile.
-            actor_loss='awr',  # Actor loss type ('awr' or 'ddpgbc').
-            alpha=0.2,  # Temperature in AWR or BC coefficient in DDPG+BC.
-            lam=0.2,  # State-proximal Policy Extraction (SPE) parameter
+            actor_loss='ddpgbc',  # Actor loss type ('awr' or 'ddpgbc').
+            alpha=0.3,  # Temperature in AWR or BC coefficient in DDPG+BC.
             const_std=True,  # Whether to use constant standard deviation for the actor.
             discrete=False,  # Whether the action space is discrete.
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
             # Dataset hyperparameters.
             dataset_class='GCDataset',  # Dataset class name.
-            value_p_curgoal=0.0,  # Probability of using the current state as the value goal.
-            value_p_trajgoal=1.0,  # Probability of using a future state in the same trajectory as the value goal.
-            value_p_randomgoal=0.0,  # Probability of using a random state as the value goal.
+            value_p_curgoal=0.2,  # Probability of using the current state as the value goal.
+            value_p_trajgoal=0.5,  # Probability of using a future state in the same trajectory as the value goal.
+            value_p_randomgoal=0.3,  # Probability of using a random state as the value goal.
             value_geom_sample=True,  # Whether to use geometric sampling for future value goals.
             actor_p_curgoal=0.0,  # Probability of using the current state as the actor goal.
             actor_p_trajgoal=1.0,  # Probability of using a future state in the same trajectory as the actor goal.
             actor_p_randomgoal=0.0,  # Probability of using a random state as the actor goal.
-            actor_geom_sample=True,  # Whether to use geometric sampling for future actor goals.
-            gc_negative=False,  # Unused (defined for compatibility with GCDataset).
+            actor_geom_sample=False,  # Whether to use geometric sampling for future actor goals.
+            gc_negative=True,  # Whether to use '0 if s == g else -1' (True) or '1 if s == g else 0' (False) as reward.
             p_aug=0.0,  # Probability of applying image augmentation.
             frame_stack=ml_collections.config_dict.placeholder(int),  # Number of frames to stack.
+            # dirichlet energy
+            actor_noise=0.02,
+            actor_reg_weight=0.2,
         )
     )
     return config

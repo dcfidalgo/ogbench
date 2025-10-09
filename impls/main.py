@@ -3,6 +3,7 @@ import os
 import random
 import time
 from collections import defaultdict
+from datetime import datetime
 
 import jax
 import numpy as np
@@ -23,7 +24,8 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string('run_group', 'Debug', 'Run group.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
 flags.DEFINE_string('env_name', 'antmaze-large-navigate-v0', 'Environment (dataset) name.')
-flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
+flags.DEFINE_string('dataset_dir', '~/.ogbench/data', 'Directory to store datasets.')
+flags.DEFINE_string('save_dir', '', 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
 
@@ -42,23 +44,43 @@ flags.DEFINE_integer('eval_on_cpu', 1, 'Whether to evaluate on CPU.')
 
 config_flags.DEFINE_config_file('agent', 'agents/gciql.py', lock_config=False)
 
-os.environ["WANDB_MODE"] = "offline"
-os.environ["MUJOCO_GL"] = "osmesa" if platform.system() == "Linux" else "glfw"
+
+def build_exp_name(env_name: str, agent_name: str, seed: int) -> str:
+    exp_name = f"{env_name}_{agent_name}_seed{seed:03d}_"
+    exp_name += f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
+    if 'SLURM_JOB_ID' in os.environ:
+        exp_name += f'_{os.environ["SLURM_JOB_ID"]}.'
+    if 'SLURM_PROCID' in os.environ:
+        exp_name += f'_{os.environ["SLURM_PROCID"]}.'
+
+    return exp_name
+
 
 def main(_):
     # Set up logger.
-    exp_name = get_exp_name(FLAGS.seed)
-    setup_wandb(project='OGBench', group=FLAGS.run_group, name=exp_name, mode=os.getenv("WANDB_MODE", "online"))
+    # exp_name = get_exp_name(FLAGS.seed)
+    if not FLAGS.save_dir:
+        exp_name = build_exp_name(FLAGS.env_name, FLAGS.agent.agent_name, FLAGS.seed)
+        FLAGS.save_dir = os.path.join(FLAGS.save_dir, FLAGS.run_group, exp_name)
+        os.makedirs(FLAGS.save_dir, exist_ok=True)
 
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
-    os.makedirs(FLAGS.save_dir, exist_ok=True)
+    setup_wandb(
+        project='OGBench',
+        group=FLAGS.run_group,
+        name=os.path.basename(FLAGS.save_dir),
+        mode=os.getenv('WANDB_MODE', 'online'),
+        dir=FLAGS.save_dir,
+    )
+
     flag_dict = get_flag_dict()
     with open(os.path.join(FLAGS.save_dir, 'flags.json'), 'w') as f:
         json.dump(flag_dict, f)
 
     # Set up environment and dataset.
     config = FLAGS.agent
-    env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, frame_stack=config['frame_stack'])
+    env, train_dataset, val_dataset = make_env_and_datasets(
+        FLAGS.env_name, frame_stack=config['frame_stack'], dataset_dir=FLAGS.dataset_dir
+    )
 
     dataset_class = {
         'GCDataset': GCDataset,

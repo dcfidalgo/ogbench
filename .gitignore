@@ -13,3 +13,7 @@ dist/
 .ruff_cache/
 
 impls/exp
+
+.vscode/
+.venv/
+*.sif
